@@ -12,4 +12,22 @@ import java.lang.annotation.Target;
 @Target({ElementType.TYPE, ElementType.METHOD})
 public @interface LogInvocation {
     String[] environments() default {};
+
+    DesensitizationMode desensitizationMode() default DesensitizationMode.NONE;
+
+    /**
+     * whether to log the request headers.
+     */
+    boolean logRequestHeaders() default false;
+
+    /**
+     * sensitive headers that should be masked in the logs.
+     */
+    String[] sensitiveHeaders() default {};
+
+    String[] sensitiveParams() default {};
+
+    String[] sensitiveRequestBodyFields() default {};
+
+    String[] sensitiveResponseFields() default {};
 }

@@ -7,6 +7,8 @@ import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.util.Map;
 
+import static feign.Util.checkNotNull;
+
 /**
  * example:
  * <pre> {@code
@@ -20,12 +22,25 @@ import java.util.Map;
  */
 public class InvocationHandlerFactoryImpl implements InvocationHandlerFactory {
     private final String environment;
+    private final Class<? extends FeignInvocationHandler> handlerClass;
 
     public InvocationHandlerFactoryImpl(String environment) {
         this.environment = environment;
+        this.handlerClass = FeignInvocationHandler.class;
     }
+
+    public InvocationHandlerFactoryImpl(String environment, Class<? extends FeignInvocationHandler> handlerClass) {
+        this.environment = environment;
+        this.handlerClass = checkNotNull(handlerClass, "handlerClass");
+    }
+
     @Override
     public InvocationHandler create(Target target, Map<Method, MethodHandler> dispatch) {
-        return new FeignInvocationHandler(target, dispatch, environment);
+        try {
+            return handlerClass.getConstructor(Target.class, Map.class, String.class)
+                    .newInstance(target, dispatch, environment);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 }

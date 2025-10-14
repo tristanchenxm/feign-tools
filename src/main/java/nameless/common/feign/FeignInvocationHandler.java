@@ -1,20 +1,15 @@
 package nameless.common.feign;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
 import feign.InvocationHandlerFactory;
 import feign.Target;
-import nameless.common.util.JsonUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.util.ClassUtils;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
-import java.lang.reflect.Parameter;
 import java.lang.reflect.Proxy;
-import java.util.LinkedList;
-import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import static feign.Util.checkNotNull;
 
@@ -24,14 +19,23 @@ import static feign.Util.checkNotNull;
 public class FeignInvocationHandler implements InvocationHandler {
     private final static Logger logger = LoggerFactory.getLogger(FeignInvocationHandler.class);
 
-    private final Target target;
-    private final Map<Method, InvocationHandlerFactory.MethodHandler> dispatch;
-    private final String environment;
+    final Target target;
+    final Map<Method, InvocationHandlerFactory.MethodHandler> dispatch;
+    final String environment;
 
-    FeignInvocationHandler(Target target, Map<Method, InvocationHandlerFactory.MethodHandler> dispatch, String environment) {
+    /**
+     * Cache for loggable methods.
+     * Why not use a simple Map<Method, Boolean>?
+     * because ConcurrentHashMap doesn't allow null values,
+     * so we use Integer to represent the 3 loggable states: 0 for false, 1 for true, and -1 for null
+     */
+    private final ConcurrentHashMap<Method, ThreeStates<LogInvocation>> loggableCache;
+
+    public FeignInvocationHandler(Target target, Map<Method, InvocationHandlerFactory.MethodHandler> dispatch, String environment) {
         this.target = checkNotNull(target, "target");
         this.dispatch = checkNotNull(dispatch, "dispatch for %s", target);
         this.environment = environment;
+        this.loggableCache = new ConcurrentHashMap<>();
     }
 
     @Override
@@ -48,28 +52,16 @@ public class FeignInvocationHandler implements InvocationHandler {
         } else if ("toString".equals(method.getName())) {
             return toString();
         }
-        Object o = dispatch.get(method).invoke(args);
-        logInvocation(proxy, method, args, o);
-        return o;
+        FeignContext.LoggableContext.setLogSettings(loggable(proxy, method));
+        return dispatch.get(method).invoke(args);
     }
 
-    private void logInvocation(Object proxy, Method method, Object[] args, Object o) throws JsonProcessingException {
-        if (!loggable(proxy, method)) {
-            return;
+
+    // null, means not use logInvocation annotation
+    protected ThreeStates<LogInvocation> loggable(Object proxy, Method method) {
+        if (loggableCache.containsKey(method)) {
+            return loggableCache.get(method);
         }
-
-        List<String> logMsg = new LinkedList<>();
-        // log class and method name
-        logMsg.add(method.getDeclaringClass().getName() + "." + method.getName());
-        // log parameters
-        logParameters(method, args, logMsg);
-        logMsg.add("==>");
-        // log return value
-        logMsg.add(JsonUtil.toString(o));
-        logger.info(String.join(" ", logMsg));
-    }
-
-    private boolean loggable(Object proxy, Method method) {
         LogInvocation logInvocation = method.getAnnotation(LogInvocation.class);
         if (logInvocation == null) {
             Class<?>[] interfaces = proxy.getClass().getInterfaces();
@@ -86,33 +78,23 @@ public class FeignInvocationHandler implements InvocationHandler {
                 }
             }
         }
+        // if no LogInvocation annotation, then return null
         if (logInvocation == null) {
-            return false;
+            loggableCache.putIfAbsent(method, ThreeStates.none());
+            return loggableCache.get(method);
         }
         if (logInvocation.environments().length == 0) {
-            return true;
+            loggableCache.putIfAbsent(method, ThreeStates.set(logInvocation));
+            return loggableCache.get(method);
         }
         for (String supportedEnvironment : logInvocation.environments()) {
-            if (supportedEnvironment.equals(environment)) {
-                return true;
+            if (supportedEnvironment.equalsIgnoreCase(environment)) {
+                loggableCache.putIfAbsent(method, ThreeStates.set(logInvocation));
+                return loggableCache.get(method);
             }
         }
-        return false;
-    }
-
-    private void logParameters(Method method, Object[] args, List<String> logMsg) throws JsonProcessingException {
-        Parameter[] parameters = method.getParameters();
-        for (int i = 0; i < args.length; i++) {
-            Object arg = args[i];
-            Parameter parameter = parameters[i];
-            if (arg == null) {
-                logMsg.add("null");
-            } else if (ClassUtils.isPrimitiveOrWrapper(arg.getClass()) || String.class == arg.getClass()) {
-                logMsg.add(arg.toString());
-            } else {
-                logMsg.add(JsonUtil.toString(arg));
-            }
-        }
+        loggableCache.put(method, ThreeStates.setButUnavailable(logInvocation));
+        return loggableCache.get(method);
     }
 
     @Override
